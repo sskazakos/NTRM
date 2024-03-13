@@ -2,7 +2,8 @@
 The Network Theory Resilience Metric (NTRM) samples cascade scenarios from 
 a MATPOWER case file, then runs the AC Cascading Failure Model (AC-CFM) code,
 for all the resulting cases. Then, a set of network science metrics for the
-network under study are derived. The following parameters are calculated:
+network under study are derived, using MATLAB and BCT functions. The following
+parameters are calculated:
 
 - Degree centrality of each node (bus)
 - Eigenvecor centrality of each node (bus)
@@ -23,8 +24,15 @@ network under study are derived. The following parameters are calculated:
     https://github.com/mnoebels/AC-CFM, Reference: Noebels, M.,
     Preece, R., Panteli, M. "AC Cascading Failure Model for
     Resilience Analysis in Power Networks." IEEE Systems Journal (2020).
-- Brain Connectivity Toolbox
+- Brain Connectivity Toolbox (BCT)
     https://sites.google.com/site/bctnet/home, Reference: Rubinov M,
     Sporns O, "Complex network measures of brain connectivity:
     Uses and interpretations", (2010) NeuroImage 52:1059-69.
+
+# Usage
+```
+ntrm('MATPOWER case file name', [sample size])
+```
+
+e.g.  results = ntrm('case39', 500)
 

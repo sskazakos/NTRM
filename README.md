@@ -36,3 +36,7 @@ ntrm('MATPOWER case file name', [sample size])
 
 e.g.  results = ntrm('case39', 500)
 
+# Acknowledgements
+The authors would like to thank Mathaios Panteli for valuable discussions
+and support. This work was supported by the Engineering and Physical
+Sciences Research Council [EP/W034204/1]

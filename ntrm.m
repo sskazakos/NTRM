@@ -81,7 +81,7 @@ function NetworkTheoryResilienceMetric = ntrm(source_file, sample_size)
 
 %% Initialisation
 
-    source_file = 'case39.m'; % specify the desired MATPOWER case
+    %source_file = 'case39.m'; % specify the desired MATPOWER case
     % Define the minimum number of initial failures. This is used in the
     % scenario generation, to define the complete set of scenarios that
     % will be generated.
@@ -95,7 +95,7 @@ function NetworkTheoryResilienceMetric = ntrm(source_file, sample_size)
     fprintf(fileID,'');
     fclose(fileID);
 
-    % This is to copy all the content of specified case into TempTestCase
+    % This is to copy all the content of specified case into TempTestCase.m
     destination_file = file_name;
     fileID = fopen(source_file,'r');
     content = fread(fileID);
@@ -110,84 +110,96 @@ function NetworkTheoryResilienceMetric = ntrm(source_file, sample_size)
     
     % OPTIONAL: Remove any branches? Note that if multiple branches are
     % removed, the index changes every time a branch is removed.
-    mpc.branch(3,:) = [];
-    mpc.branch(5,:) = [];
+%     EXAMPLE CODE:
+%     mpc.branch(3,:) = [];
+%     mpc.branch(5,:) = [];
     
     %%%%%%%%%%%%%%
     
     n_bus = size(mpc.bus,1);%Number of buses
     n_branch = size(mpc.branch,1);%Number of branches
 
-%% Deriving the scenarios
+%% Deriving the scenarios and the set of initial contingencies
+% (NOTE: In large networks this may take A LONG TIME to compute)
 
-    scen_all = [];
     fprintf('Working out scenario list...\n');
-
-    % The following parallel for loop creates all the possible scenarios
-    % with the defined number of initial failures
-    parfor k = 0:fail_min
+    f = waitbar(0,'Working out scenario list');%create a progress bar window
+    total = 0;
+    
+    %calculate number of maximum possible combinations
+    for k = 1:fail_min
         combos = nchoosek(1:n_branch, k);
-        for i = 1:size(combos,1)
-            b = zeros(1,n_branch);
-            b(combos(i,:)) = 1;
-            scen_all = [scen_all;b]; %all scenarios with the defined failures
+        total = total + size(combos,1);
+    end
+    
+    if sample_size >= total
+        %%%%%%%%%%%%%%%%%%% FULL SAMPLING
+        % The following parallel for loop creates all the possible scenarios
+        % with the defined number of initial failures
+        scenario_count = 1;
+        for k = 1:fail_min
+            combos = nchoosek(1:n_branch, k);
+            for i = 1:size(combos,1)
+                initial_contingency{scenario_count,:} = transpose(combos(i,:));
+                scenario_count = scenario_count + 1;
+                waitbar((scenario_count-1)/total,f,strcat('Working out scenario list: scenario...',string(scenario_count-1),'/',string(total)));
+            end
+        end
+    else
+        %%%%%%%%%%%%%%%%%%% RANDOM SAMPLING (uniform distribution)
+        scenario_count = 0;
+        for k = 1:fail_min
+            % Taking only X (= sample_size) samples from all the scenarios.
+            % Please note that this function will truncate the number of samples
+            % to [the rounded down integer of (sample_size/fail_min)] * fail_min.
+            for i = 1:(sample_size/fail_min)
+                scenario_count = scenario_count + 1;
+                rng("shuffle");%this ensures that the random seed is different every time - if the same random results are required consistently, then comment this out
+                initial_contingency{scenario_count,:} = randi(n_bus,[k 1]);
+                waitbar((scenario_count-1)/sample_size,f,strcat('Working out scenario list: scenario...',string(scenario_count-1),'/',string(sample_size)));
+            end
         end
     end
+    
+    close(f);
     fprintf('Scenario list generated, now running cascade model...\n');
 
-    % Taking only X (= sample_size) samples from all the scenarios.
-    % If the full list of scenarios is required, then this should be:
-    %   scen_rand = scen_all
-    % (NOTE: In large networks this may take A LONG TIME to compute)
-    scen_rand = [scen_all(1:sample_size,:); scen_all(end-(sample_size-1):end,:)];  
-
- %% Initialising cascade model
+ %% Initialising and running cascade model
     
     % load default AC-CFM settings
     settings = get_default_settings();
     % enable(1)/disable(0) verbose AC-CFM output – just for testing
     settings.verbose = 0;
-
-    % derive the set of initial contingencies
-    parfor i = 1:size(scen_rand,1)
-        initial_contingency_ = [];
-        for j = 1:size(scen_rand,2) 
-            if scen_rand(i,j) == 1
-               initial_contingency_ = [initial_contingency_;j];
-            end
-        end
-        initial_contingency{i,:} = initial_contingency_;
-    end
-    
-%% Running cascade model
-
+    % run cascade model
     result = accfm_branch_scenarios(mpc, initial_contingency, settings);
   
-%% Processing the cascade modelling results
+%% Processing the cascade model results
 
     % set up the arrays that will receive the cascade count and shedding
-    cascade_branchNumber = zeros(size(scen_rand,1),n_branch);
-    totalLoadShedding = zeros(size(scen_rand,1),n_branch);
-    num_cascade=zeros(size(scen_rand,1),1);
+    cascade_branchNumber = zeros(size(initial_contingency,1),n_branch);
+    totalLoadShedding = zeros(size(initial_contingency,1),n_branch);
+    ValidCascadeSamples = 0;
+    FailedSamples = 0;
+    NoCascadeSamples = 0;
     
     % tally up the cascade count and shedding
-    for i = 1:size(scen_rand,1)
-        if result.contingency(i) >= 1 %if a cascade is developed
-           for j = 1:size(scen_rand,2)
-               if scen_rand(i,j) == 1
-                    cascade_branchNumber(i,j) = 1;  %save in a matrix the which buses caused the cascade
-                    totalLoadShedding(i,j) = result.lost_load_final(i); 
-               end
+    for i = 1:size(initial_contingency,1)
+        if result.lost_load_final(i) > 0 %if a cascade is developed, i.e. there is load shedding
+           for j = 1:size(initial_contingency,2)
+                cascade_branchNumber(i,initial_contingency{i,j}) = 1;  %save in a matrix which buses caused the cascade
+                totalLoadShedding(i,initial_contingency{i,j}) = result.lost_load_final(i); 
            end
-           num_cascade = num_cascade + 1;%count the total number of cascades
+           ValidCascadeSamples = ValidCascadeSamples + 1;%count the total number of cascades
+        elseif result.lost_load_final(i) < 0
+           FailedSamples = FailedSamples + 1;%this triggers in the cases where total load shedding (i.e. "lost_load_final" in the AC-CFM results) is -1, which means that AC-CFM failed to converge.
+        else
+           NoCascadeSamples = NoCascadeSamples + 1;%count the number of samples where no cascade happened.
         end
     end
     
     % output the final values for load shedding
-    totalloadshedding_branch = zeros(n_branch,1);
     totalloadshedding_branch = transpose(sum(totalLoadShedding,1)); %shows how much loaded shedding each branch causes in all scenarios 
     % output the final values for the cascade count
-    cascade_branchNumber_total = zeros(1,n_branch);
     cascade_branchNumber_total = transpose(sum(cascade_branchNumber,1));%shows how many times each branch contributed to a failure
 
 %%  Developing the graph
@@ -215,10 +227,11 @@ function NetworkTheoryResilienceMetric = ntrm(source_file, sample_size)
     % - Closeness centrality
     % - Clustering coefficient
     % - Self-admittance
-    cen_de = zeros(size(mpc.branch,1),3);
+    cen_de = zeros(size(mpc.bus,1),9);
+    cen_de_2 = zeros(size(mpc.branch,1),3);
     cen_de(1:size(mpc.bus(:,1)),1) = mpc.bus(:,1); % bus list
-    cen_de(:,2) = mpc.branch(:,1); % branch bus from
-    cen_de(:,3) = mpc.branch(:,2); % branch bus to
+    cen_de_2(:,2) = mpc.branch(:,1); % branch bus from
+    cen_de_2(:,3) = mpc.branch(:,2); % branch bus to
     cen_de(1:size(mpc.bus(:,1)),4) = centrality(B,'degree');
     cen_de(1:size(mpc.bus(:,1)),5) = centrality(B,'eigenvector');
     cen_de(1:size(mpc.bus(:,1)),6) = centrality(B,'betweenness');
@@ -232,8 +245,8 @@ function NetworkTheoryResilienceMetric = ntrm(source_file, sample_size)
     % - Degree of node(i) * Degree of node(j)
     EBC = edge_betweenness_bin(A);
     for i = 1:size(mpc.branch(:,1))
-        cen_de(i:size(mpc.branch(:,1)),10) = cen_de(mpc.branch(i,1),4) * cen_de(mpc.branch(i,2),4);
-        cen_de(i:size(mpc.branch(:,1)),11) = EBC(mpc.branch(i,1),mpc.branch(i,2));
+        cen_de_2(i:size(mpc.branch(:,1)),1) = cen_de(mpc.branch(i,1),4) * cen_de(mpc.branch(i,2),4);
+        cen_de_2(i:size(mpc.branch(:,1)),2) = EBC(mpc.branch(i,1),mpc.branch(i,2));
     end
     
 %% Return results
@@ -246,9 +259,20 @@ function NetworkTheoryResilienceMetric = ntrm(source_file, sample_size)
     NetworkTheoryResilienceMetric.ClosenessCentrality = cen_de(1:size(mpc.bus(:,1)),7);
     NetworkTheoryResilienceMetric.ClusteringCoefficient = cen_de(1:size(mpc.bus(:,1)),8);
     NetworkTheoryResilienceMetric.SelfAdmittance = cen_de(1:size(mpc.bus(:,1)),9);
-    NetworkTheoryResilienceMetric.node_i_node_j = cen_de(1:size(mpc.branch(:,1)),10);
-    NetworkTheoryResilienceMetric.EdgeBetweennessCentrality = cen_de(1:size(mpc.branch(:,1)),11);
+    NetworkTheoryResilienceMetric.node_i_node_j = cen_de_2(1:size(mpc.branch(:,1)),1);
+    NetworkTheoryResilienceMetric.EdgeBetweennessCentrality = cen_de_2(1:size(mpc.branch(:,1)),2);
     NetworkTheoryResilienceMetric.TotalCascades = cascade_branchNumber_total;
     NetworkTheoryResilienceMetric.TotalShedding = totalloadshedding_branch;
+    NetworkTheoryResilienceMetric.scenario_count = scenario_count;
+    NetworkTheoryResilienceMetric.ValidCascadeSamples = ValidCascadeSamples;
+    NetworkTheoryResilienceMetric.FailedSamples = FailedSamples;
+    NetworkTheoryResilienceMetric.NoCascadeSamples = NoCascadeSamples;
+    NetworkTheoryResilienceMetric.initial_contingency = initial_contingency;
     
+ %% Tidy up
+    % This is to remove all content of a temporary .m file 
+    file_name = 'TempTestCase.m'; %specify the name of the temporary .m file
+    fileID = fopen(file_name,'w');
+    fprintf(fileID,'');
+    fclose(fileID);
     
